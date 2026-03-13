@@ -87,7 +87,7 @@ class Day3SourceRegressionTests(unittest.TestCase):
         system_source = read_source("app/system.py")
 
         self.assertIn('os.getenv("METRICS_DISK_PATH", "/host/proc/1/root")', config_source)
-        self.assertIn('"METRICS_HOSTNAME_PATH"', config_source)
+        self.assertIn('"/host/proc/1/root/etc/hostname"', config_source)
         self.assertIn('os.getenv("CPU_WARNING_THRESHOLD", "70")', config_source)
         self.assertIn('os.getenv("CPU_CRITICAL_THRESHOLD", "90")', config_source)
         self.assertIn('os.getenv("MEM_WARNING_THRESHOLD", "75")', config_source)
@@ -108,7 +108,7 @@ class MetricsConfigSettingsTests(unittest.TestCase):
             settings = config_module.Settings()
 
         self.assertEqual(settings.metrics_disk_path, "/host/proc/1/root")
-        self.assertEqual(settings.metrics_hostname_path, "/host/proc/sys/kernel/hostname")
+        self.assertEqual(settings.metrics_hostname_path, "/host/proc/1/root/etc/hostname")
         self.assertEqual(settings.cpu_warning_threshold, 70.0)
         self.assertEqual(settings.cpu_critical_threshold, 90.0)
         self.assertEqual(settings.mem_warning_threshold, 75.0)
@@ -153,7 +153,7 @@ class SystemMetricsTests(unittest.TestCase):
     def _make_settings(**overrides):
         values = {
             "server_name": None,
-            "metrics_hostname_path": "/host/proc/sys/kernel/hostname",
+            "metrics_hostname_path": "/host/proc/1/root/etc/hostname",
             "metrics_disk_path": "/host/proc/1/root",
             "metrics_cpu_interval_seconds": 0.5,
             "process_cpu_interval_seconds": 0.1,
@@ -261,6 +261,28 @@ class SystemMetricsTests(unittest.TestCase):
 
         self.assertEqual(system_module._resolve_hostname(), "socket-host-01")
         socket_module.gethostname.assert_called_once_with()
+
+    def test_resolve_hostname_uses_legacy_proc_fallback_when_primary_path_is_missing(self):
+        settings_obj = self._make_settings(metrics_hostname_path="/missing/hostname")
+        system_module, _, socket_module = self._load_system_module(
+            settings_obj,
+            socket_hostname="socket-host-01",
+        )
+
+        read_values = {
+            "/host/proc/sys/kernel/hostname": "legacy-host\n",
+        }
+        original_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path in read_values:
+                return mock.mock_open(read_data=read_values[path]).return_value
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=fake_open):
+            self.assertEqual(system_module._resolve_hostname(), "legacy-host")
+
+        socket_module.gethostname.assert_not_called()
 
     def test_resolve_disk_usage_falls_back_to_root_when_host_path_is_unavailable(self):
         settings_obj = self._make_settings(metrics_disk_path="/host/proc/1/root")

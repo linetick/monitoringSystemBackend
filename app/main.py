@@ -172,6 +172,23 @@ def login(
 def read_users_me(current_user: models.User = Depends(get_current_user)):
     return current_user
 
+
+@app.post("/logout")
+def logout(
+    request: Request,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    log_action(
+        db,
+        current_user,
+        "LOGOUT",
+        "/logout",
+        request.client.host if request.client else None,
+        "mode=client_side_logout",
+    )
+    return {"status": "success", "message": "Logged out"}
+
 # --- Metrics ---
 @app.get("/metrics", response_model=ServerMetrics)
 def get_metrics(current_user: models.User = Depends(get_current_user)):

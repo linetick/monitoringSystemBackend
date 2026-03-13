@@ -56,7 +56,7 @@ class Settings:
         self.metrics_disk_path = os.getenv("METRICS_DISK_PATH", "/host/proc/1/root")
         self.metrics_hostname_path = os.getenv(
             "METRICS_HOSTNAME_PATH",
-            "/host/proc/sys/kernel/hostname",
+            "/host/proc/1/root/etc/hostname",
         )
         self.cpu_warning_threshold = float(os.getenv("CPU_WARNING_THRESHOLD", "70"))
         self.cpu_critical_threshold = float(os.getenv("CPU_CRITICAL_THRESHOLD", "90"))

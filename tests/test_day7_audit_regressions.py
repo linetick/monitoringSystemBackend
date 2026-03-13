@@ -124,6 +124,7 @@ class Day7SourceRegressionTests(unittest.TestCase):
 
         self.assertIn('@app.get("/audit", response_model=List[AuditLogResponse])', main_source)
         self.assertIn('@app.get("/audit/export")', main_source)
+        self.assertIn('@app.post("/logout")', main_source)
         self.assertIn('limit: int = Query(100, ge=1, le=1000)', main_source)
         self.assertIn('limit: int = Query(1000, ge=1, le=5000)', main_source)
         self.assertIn('format: str = Query("csv", regex="^(csv|json)$")', main_source)
@@ -137,6 +138,7 @@ class Day7SourceRegressionTests(unittest.TestCase):
 
         self.assertIn('"LOGIN_SUCCESS"', main_source)
         self.assertIn('action="LOGIN_FAILED"', main_source)
+        self.assertIn('"LOGOUT"', main_source)
         self.assertIn('"CREATE_USER"', main_source)
         self.assertIn('"UPDATE_USER"', main_source)
         self.assertIn('"DELETE_USER"', main_source)
@@ -407,6 +409,28 @@ class AuditEndpointTests(unittest.TestCase):
             object_name="/audit",
             ip_address="127.0.0.1",
             details=f"username=alice; action=LOGIN_SUCCESS; object_name=/token; ip_address=127.0.0.1; date_from={date_from.isoformat()}; limit=50",
+        )
+
+    def test_logout_endpoint_logs_action_and_returns_success_payload(self):
+        main_module, audit_module, _, _ = self._load_main_module()
+        db = mock.Mock()
+        request = types.SimpleNamespace(client=types.SimpleNamespace(host="127.0.0.1"))
+        current_user = types.SimpleNamespace(id=1, username="admin", role="admin")
+
+        result = main_module.logout(
+            request=request,
+            db=db,
+            current_user=current_user,
+        )
+
+        self.assertEqual(result, {"status": "success", "message": "Logged out"})
+        audit_module.create_user_audit_entry.assert_called_once_with(
+            db,
+            user=current_user,
+            action="LOGOUT",
+            object_name="/logout",
+            ip_address="127.0.0.1",
+            details="mode=client_side_logout",
         )
 
     def test_export_audit_log_returns_json_attachment_and_audits_export(self):

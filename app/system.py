@@ -19,19 +19,35 @@ PROCESS_STATUS_ZOMBIE = "zombie"
 PROCESS_SORT_FIELDS = {"pid", "name", "cpu", "mem", "status", "owner"}
 
 
+def _read_hostname_file(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            hostname = file.read().strip()
+            return hostname or None
+    except OSError:
+        return None
+
+
 def _resolve_hostname() -> str:
     if settings.server_name:
         return settings.server_name
 
-    hostname_path = settings.metrics_hostname_path
-    if hostname_path:
-        try:
-            with open(hostname_path, "r", encoding="utf-8") as file:
-                hostname = file.read().strip()
-                if hostname:
-                    return hostname
-        except OSError:
-            pass
+    hostname_paths = [
+        settings.metrics_hostname_path,
+        "/host/proc/1/root/etc/hostname",
+        "/host/proc/sys/kernel/hostname",
+    ]
+    checked_paths = []
+    for hostname_path in hostname_paths:
+        if not hostname_path or hostname_path in checked_paths:
+            continue
+        checked_paths.append(hostname_path)
+        hostname = _read_hostname_file(hostname_path)
+        if hostname:
+            return hostname
 
     try:
         return socket.gethostname()
