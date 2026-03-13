@@ -1,3 +1,4 @@
+from enum import Enum
 from datetime import datetime
 from typing import List, Optional
 
@@ -69,6 +70,20 @@ class ProcessInfo(BaseModel):
     mem: float
     status: str
     owner: str
+
+
+class ProcessSortField(str, Enum):
+    PID = "pid"
+    NAME = "name"
+    CPU = "cpu"
+    MEM = "mem"
+    STATUS = "status"
+    OWNER = "owner"
+
+
+class SortDirection(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
 
 class ProcessAction(BaseModel):
     action: str = Field(..., pattern="^(kill|kill_tree|priority)$")

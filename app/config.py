@@ -41,6 +41,17 @@ class Settings:
         self.metrics_cpu_interval_seconds = float(
             os.getenv("METRICS_CPU_INTERVAL_SECONDS", "1.0")
         )
+        self.process_cpu_interval_seconds = float(
+            os.getenv("PROCESS_CPU_INTERVAL_SECONDS", "0.1")
+        )
+        self.processes_max_limit = max(
+            1,
+            _as_int(os.getenv("PROCESSES_MAX_LIMIT"), 500),
+        )
+        self.processes_default_limit = min(
+            max(1, _as_int(os.getenv("PROCESSES_DEFAULT_LIMIT"), 100)),
+            self.processes_max_limit,
+        )
         self.server_name = os.getenv("SERVER_NAME")
         self.metrics_disk_path = os.getenv("METRICS_DISK_PATH", "/host/proc/1/root")
         self.metrics_hostname_path = os.getenv(

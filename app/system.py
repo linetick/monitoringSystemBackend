@@ -1,5 +1,7 @@
-from datetime import datetime, timezone
 import socket
+import time
+from datetime import datetime, timezone
+from typing import Optional
 
 import psutil
 from fastapi import HTTPException
@@ -11,6 +13,10 @@ STATUS_OK = "ok"
 STATUS_WARNING = "warning"
 STATUS_CRITICAL = "critical"
 PROCESS_ACTION_TIMEOUT_SECONDS = 3
+PROCESS_STATUS_ACCESS_DENIED = "access_denied"
+PROCESS_STATUS_UNKNOWN = "unknown"
+PROCESS_STATUS_ZOMBIE = "zombie"
+PROCESS_SORT_FIELDS = {"pid", "name", "cpu", "mem", "status", "owner"}
 
 
 def _resolve_hostname() -> str:
@@ -120,33 +126,122 @@ def get_server_metrics():
         "alerts": alerts,
     }
 
+def _normalize_process_name(pid: int, name: Optional[str]) -> str:
+    return name or f"pid-{pid}"
 
-def get_processes(filter_name: str = None, sort_by: str = "pid", reverse: bool = False):
-    procs = []
-    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status', 'username']):
+
+def _normalize_process_owner(owner: Optional[str]) -> str:
+    return owner or PROCESS_STATUS_UNKNOWN
+
+
+def _prime_process_cpu_counters(processes) -> None:
+    # psutil returns meaningful per-process CPU values only after the first read.
+    for proc in processes:
         try:
-            info = proc.info
-            # Фильтрация
-            process_name = info["name"] or ""
-            if filter_name and filter_name.lower() not in process_name.lower():
-                continue
-            
-            procs.append({
-                "pid": info['pid'],
-                "name": process_name,
-                "cpu": info['cpu_percent'] or 0.0,
-                "mem": info['memory_percent'] or 0.0,
-                "status": info['status'],
-                "owner": info['username'] or "root"
-            })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            proc.cpu_percent(interval=None)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
             continue
 
-    # Сортировка
-    if sort_by in ["pid", "name", "cpu", "mem", "status", "owner"]:
-        procs.sort(key=lambda x: x[sort_by], reverse=reverse)
-    
-    return procs
+    if settings.process_cpu_interval_seconds > 0:
+        time.sleep(settings.process_cpu_interval_seconds)
+
+
+def _build_process_info(proc: psutil.Process):
+    info = proc.info
+    pid = info["pid"]
+    process_name = _normalize_process_name(pid, info.get("name"))
+    process_owner = _normalize_process_owner(info.get("username"))
+    process_status = info.get("status") or PROCESS_STATUS_UNKNOWN
+
+    try:
+        with proc.oneshot():
+            cpu_percent = round(proc.cpu_percent(interval=None) or 0.0, 2)
+            mem_percent = round(proc.memory_percent() or 0.0, 2)
+
+            if process_name.startswith("pid-"):
+                process_name = _normalize_process_name(pid, proc.name())
+
+            if process_owner == PROCESS_STATUS_UNKNOWN:
+                process_owner = _normalize_process_owner(proc.username())
+
+            if process_status == PROCESS_STATUS_UNKNOWN:
+                process_status = proc.status() or PROCESS_STATUS_UNKNOWN
+    except psutil.ZombieProcess:
+        cpu_percent = 0.0
+        mem_percent = 0.0
+        process_status = PROCESS_STATUS_ZOMBIE
+    except psutil.AccessDenied:
+        cpu_percent = 0.0
+        mem_percent = 0.0
+        if process_status == PROCESS_STATUS_UNKNOWN:
+            process_status = PROCESS_STATUS_ACCESS_DENIED
+        if process_owner == PROCESS_STATUS_UNKNOWN:
+            process_owner = "restricted"
+    except psutil.NoSuchProcess:
+        return None
+
+    return {
+        "pid": pid,
+        "name": process_name,
+        "cpu": cpu_percent,
+        "mem": mem_percent,
+        "status": process_status,
+        "owner": process_owner,
+    }
+
+
+def _sort_processes(processes: list[dict], sort_by: str, reverse: bool) -> list[dict]:
+    if sort_by not in PROCESS_SORT_FIELDS:
+        sort_by = "pid"
+
+    if sort_by in {"name", "status", "owner"}:
+        return sorted(
+            processes,
+            key=lambda process: (process[sort_by].casefold(), process["pid"]),
+            reverse=reverse,
+        )
+
+    return sorted(
+        processes,
+        key=lambda process: (process[sort_by], process["pid"]),
+        reverse=reverse,
+    )
+
+
+def get_processes(
+    filter_name: Optional[str] = None,
+    sort_by: str = "pid",
+    sort_direction: str = "asc",
+    skip: int = 0,
+    limit: Optional[int] = None,
+):
+    processes = list(
+        psutil.process_iter(
+            ["pid", "name", "status", "username"],
+            ad_value=None,
+        )
+    )
+    _prime_process_cpu_counters(processes)
+
+    normalized_filter = filter_name.strip().casefold() if filter_name else None
+    collected_processes = []
+    for proc in processes:
+        process_info = _build_process_info(proc)
+        if process_info is None:
+            continue
+        if normalized_filter and normalized_filter not in process_info["name"].casefold():
+            continue
+        collected_processes.append(process_info)
+
+    reverse = sort_direction == "desc"
+    sorted_processes = _sort_processes(collected_processes, sort_by, reverse)
+    total = len(sorted_processes)
+
+    effective_limit = limit if limit is not None else settings.processes_default_limit
+    effective_limit = min(max(1, effective_limit), settings.processes_max_limit)
+    paginated_processes = sorted_processes[skip:skip + effective_limit]
+
+    return paginated_processes, total
 
 
 def _safe_process_name(process: psutil.Process) -> str:

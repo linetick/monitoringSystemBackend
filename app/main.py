@@ -1,18 +1,21 @@
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from . import auth, database, models, system
 from .roles import UserRole
+from .config import settings
 from .schemas import (
     AuditLogResponse,
     ProcessAction,
     ProcessActionResult,
     ProcessInfo,
+    ProcessSortField,
     ServerMetrics,
+    SortDirection,
     Token,
     UserCreate,
     UserResponse,
@@ -89,11 +92,31 @@ def get_metrics(current_user: models.User = Depends(get_current_user)):
 # --- Processes ---
 @app.get("/processes", response_model=List[ProcessInfo])
 def list_processes(
-    filter_name: str = None,
-    sort_by: str = "pid",
+    response: Response,
+    filter_name: Optional[str] = Query(None, min_length=1, max_length=255),
+    sort_by: ProcessSortField = ProcessSortField.PID,
+    sort_direction: SortDirection = SortDirection.ASC,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(
+        settings.processes_default_limit,
+        ge=1,
+        le=settings.processes_max_limit,
+    ),
     current_user: models.User = Depends(get_current_user)
 ):
-    return system.get_processes(filter_name, sort_by)
+    processes, total = system.get_processes(
+        filter_name=filter_name,
+        sort_by=sort_by.value,
+        sort_direction=sort_direction.value,
+        skip=skip,
+        limit=limit,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Skip"] = str(skip)
+    response.headers["X-Page-Limit"] = str(limit)
+    response.headers["X-Sort-By"] = sort_by.value
+    response.headers["X-Sort-Direction"] = sort_direction.value
+    return processes
 
 @app.post("/processes/{pid}", response_model=ProcessActionResult)
 def control_process(
