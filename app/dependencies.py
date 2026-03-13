@@ -1,10 +1,10 @@
-# app/dependencies.py
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
-from . import database, models, auth
+from . import auth, database, models
+from .audit import safe_create_audit_entry
 from .roles import UserRole
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -41,9 +41,20 @@ async def get_current_user(
     return user
 
 async def get_current_admin_user(
+    request: Request,
+    db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user)
 ) -> models.User:
     if current_user.role != UserRole.ADMIN.value:
+        safe_create_audit_entry(
+            db,
+            action="FORBIDDEN_ADMIN_ACCESS",
+            object_name=request.url.path,
+            ip_address=request.client.host if request.client else None,
+            username=current_user.username,
+            user_id=current_user.id,
+            details=f"method={request.method}",
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions. Admin access required."

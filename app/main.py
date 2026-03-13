@@ -1,11 +1,17 @@
-from datetime import timedelta
+import csv
+import json
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from typing import List
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from . import auth, database, models, system
+from .audit import create_audit_entry, create_user_audit_entry
 from .roles import UserRole
 from .schemas import (
     AuditLogResponse,
@@ -24,15 +30,14 @@ app = FastAPI(title="Server Monitoring System")
 
 # --- Вспомогательная функция аудита ---
 def log_action(db: Session, user: models.User, action: str, obj: str, ip: str, details: str = None):
-    db.add(models.AuditLog(
-        user_id=user.id,
-        username=user.username,
+    create_user_audit_entry(
+        db,
+        user=user,
         action=action,
         object_name=obj,
         ip_address=ip,
-        details=details
-    ))
-    db.commit()
+        details=details,
+    )
 
 
 def get_user_or_404(db: Session, user_id: int) -> models.User:
@@ -53,20 +58,95 @@ def ensure_username_available(db: Session, username: str, exclude_user_id: int =
 def build_user_audit_details(user: models.User) -> str:
     return f"username={user.username}; role={user.role}; is_active={user.is_active}"
 
+
+def build_audit_query(
+    db: Session,
+    username: str = None,
+    action: str = None,
+    object_name: str = None,
+    ip_address: str = None,
+    date_from: datetime = None,
+    date_to: datetime = None,
+):
+    query = db.query(models.AuditLog)
+
+    if username:
+        query = query.filter(models.AuditLog.username.ilike(f"%{username.strip()}%"))
+    if action:
+        query = query.filter(models.AuditLog.action.ilike(f"%{action.strip()}%"))
+    if object_name:
+        query = query.filter(models.AuditLog.object_name.ilike(f"%{object_name.strip()}%"))
+    if ip_address:
+        query = query.filter(models.AuditLog.ip_address.ilike(f"%{ip_address.strip()}%"))
+    if date_from:
+        query = query.filter(models.AuditLog.timestamp >= date_from)
+    if date_to:
+        query = query.filter(models.AuditLog.timestamp <= date_to)
+
+    return query.order_by(models.AuditLog.timestamp.desc())
+
+
+def build_audit_filter_details(
+    username: str = None,
+    action: str = None,
+    object_name: str = None,
+    ip_address: str = None,
+    date_from: datetime = None,
+    date_to: datetime = None,
+    limit: int = None,
+    export_format: str = None,
+) -> str:
+    details = []
+    if username:
+        details.append(f"username={username}")
+    if action:
+        details.append(f"action={action}")
+    if object_name:
+        details.append(f"object_name={object_name}")
+    if ip_address:
+        details.append(f"ip_address={ip_address}")
+    if date_from:
+        details.append(f"date_from={date_from.isoformat()}")
+    if date_to:
+        details.append(f"date_to={date_to.isoformat()}")
+    if limit is not None:
+        details.append(f"limit={limit}")
+    if export_format:
+        details.append(f"format={export_format}")
+    return "; ".join(details) if details else "no_filters"
+
 # --- Auth ---
 @app.post("/token", response_model=Token)
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(database.get_db)
 ):
     user = db.query(models.User).filter(models.User.username == form_data.username).first()
     if not user or not auth.verify_password(form_data.password, user.hashed_password):
+        create_audit_entry(
+            db,
+            action="LOGIN_FAILED",
+            object_name="/token",
+            ip_address=request.client.host if request.client else None,
+            username=form_data.username,
+            details="reason=invalid_credentials",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_active:
+        create_audit_entry(
+            db,
+            action="LOGIN_FAILED",
+            object_name="/token",
+            ip_address=request.client.host if request.client else None,
+            username=user.username,
+            user_id=user.id,
+            details="reason=inactive_user",
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive user",
@@ -74,6 +154,14 @@ def login(
     access_token_expires = timedelta(minutes=auth.settings.access_token_expire_minutes)
     access_token = auth.create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    log_action(
+        db,
+        user,
+        "LOGIN_SUCCESS",
+        "/token",
+        request.client.host if request.client else None,
+        "token_type=bearer",
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -253,6 +341,10 @@ def delete_user(
     
     deleted_username = user.username
     deleted_details = build_user_audit_details(user)
+    db.query(models.AuditLog).filter(models.AuditLog.user_id == user.id).update(
+        {models.AuditLog.user_id: None},
+        synchronize_session=False,
+    )
     db.delete(user)
     db.commit()
     log_action(
@@ -268,8 +360,122 @@ def delete_user(
 # --- Audit ---
 @app.get("/audit", response_model=List[AuditLogResponse])
 def get_audit_log(
+    username: str = None,
+    action: str = None,
+    object_name: str = None,
+    ip_address: str = None,
+    date_from: datetime = None,
+    date_to: datetime = None,
+    limit: int = Query(100, ge=1, le=1000),
+    request: Request = None,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_admin_user)
 ):
-    logs = db.query(models.AuditLog).order_by(models.AuditLog.timestamp.desc()).limit(100).all()
+    logs = build_audit_query(
+        db,
+        username=username,
+        action=action,
+        object_name=object_name,
+        ip_address=ip_address,
+        date_from=date_from,
+        date_to=date_to,
+    ).limit(limit).all()
+    if request is not None:
+        log_action(
+            db,
+            current_user,
+            "AUDIT_VIEW",
+            "/audit",
+            request.client.host if request.client else None,
+            build_audit_filter_details(
+                username=username,
+                action=action,
+                object_name=object_name,
+                ip_address=ip_address,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+            ),
+        )
     return logs
+
+
+@app.get("/audit/export")
+def export_audit_log(
+    format: str = Query("csv", regex="^(csv|json)$"),
+    username: str = None,
+    action: str = None,
+    object_name: str = None,
+    ip_address: str = None,
+    date_from: datetime = None,
+    date_to: datetime = None,
+    limit: int = Query(1000, ge=1, le=5000),
+    request: Request = None,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_admin_user),
+):
+    logs = build_audit_query(
+        db,
+        username=username,
+        action=action,
+        object_name=object_name,
+        ip_address=ip_address,
+        date_from=date_from,
+        date_to=date_to,
+    ).limit(limit).all()
+
+    filename_suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filter_details = build_audit_filter_details(
+        username=username,
+        action=action,
+        object_name=object_name,
+        ip_address=ip_address,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        export_format=format,
+    )
+    if request is not None:
+        log_action(
+            db,
+            current_user,
+            "AUDIT_EXPORT",
+            "/audit/export",
+            request.client.host if request.client else None,
+            filter_details,
+        )
+
+    if format == "json":
+        payload = jsonable_encoder([AuditLogResponse.from_orm(log) for log in logs])
+        buffer = StringIO()
+        buffer.write(json.dumps(payload, ensure_ascii=False, indent=2))
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="audit_logs_{filename_suffix}.json"'
+            },
+        )
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "timestamp", "username", "action", "object_name", "ip_address", "details"])
+    for log in logs:
+        writer.writerow([
+            log.id,
+            log.timestamp.isoformat(),
+            log.username,
+            log.action,
+            log.object_name,
+            log.ip_address,
+            log.details or "",
+        ])
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="audit_logs_{filename_suffix}.csv"'
+        },
+    )
