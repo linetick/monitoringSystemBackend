@@ -1,30 +1,122 @@
-import os
-import time
+from datetime import datetime, timezone
+import socket
 
 import psutil
 from fastapi import HTTPException
 
+from .config import settings
+
+
+STATUS_OK = "ok"
+STATUS_WARNING = "warning"
+STATUS_CRITICAL = "critical"
+
+
+def _resolve_hostname() -> str:
+    if settings.server_name:
+        return settings.server_name
+
+    hostname_path = settings.metrics_hostname_path
+    if hostname_path:
+        try:
+            with open(hostname_path, "r", encoding="utf-8") as file:
+                hostname = file.read().strip()
+                if hostname:
+                    return hostname
+        except OSError:
+            pass
+
+    try:
+        return socket.gethostname()
+    except OSError:
+        return "unknown"
+
+
+def _resolve_disk_usage():
+    disk_paths = [settings.metrics_disk_path, "/"]
+    checked_paths = []
+
+    for disk_path in disk_paths:
+        if not disk_path or disk_path in checked_paths:
+            continue
+        checked_paths.append(disk_path)
+        try:
+            return psutil.disk_usage(disk_path)
+        except OSError:
+            continue
+
+    raise RuntimeError("Unable to resolve disk usage path")
+
+
+def _evaluate_metric(
+    label: str,
+    value: float,
+    warning_threshold: float,
+    critical_threshold: float,
+):
+    if value >= critical_threshold:
+        return STATUS_CRITICAL, f"{label} is critical: {value:.1f}%"
+    if value >= warning_threshold:
+        return STATUS_WARNING, f"{label} is high: {value:.1f}%"
+    return STATUS_OK, None
+
+
+def _build_metrics_status(cpu_percent: float, mem_percent: float, disk_percent: float):
+    alerts = []
+    statuses = []
+    metric_checks = [
+        (
+            "CPU usage",
+            cpu_percent,
+            settings.cpu_warning_threshold,
+            settings.cpu_critical_threshold,
+        ),
+        (
+            "Memory usage",
+            mem_percent,
+            settings.mem_warning_threshold,
+            settings.mem_critical_threshold,
+        ),
+        (
+            "Disk usage",
+            disk_percent,
+            settings.disk_warning_threshold,
+            settings.disk_critical_threshold,
+        ),
+    ]
+
+    for label, value, warning_threshold, critical_threshold in metric_checks:
+        metric_status, alert = _evaluate_metric(
+            label,
+            value,
+            warning_threshold,
+            critical_threshold,
+        )
+        statuses.append(metric_status)
+        if alert:
+            alerts.append(alert)
+
+    if STATUS_CRITICAL in statuses:
+        return STATUS_CRITICAL, alerts
+    if STATUS_WARNING in statuses:
+        return STATUS_WARNING, alerts
+    return STATUS_OK, alerts
+
 
 def get_server_metrics():
-    # Загрузка CPU (интервал 1 сек для точности)
-    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_percent = psutil.cpu_percent(interval=settings.metrics_cpu_interval_seconds)
     mem = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    
-    # Алерты (простая логика)
-    alerts = []
-    if cpu_percent > 90: alerts.append("High CPU Load")
-    if mem.percent > 90: alerts.append("High Memory Usage")
-    if disk.percent > 90: alerts.append("Disk Space Low")
+    disk = _resolve_disk_usage()
+    status, alerts = _build_metrics_status(cpu_percent, mem.percent, disk.percent)
 
     return {
-        "hostname": os.uname().nodename,
-        "cpu_percent": cpu_percent,
-        "mem_percent": mem.percent,
-        "disk_percent": disk.percent,
-        "last_update": time.time(),
-        "status": "critical" if alerts else "ok",
-        "alerts": alerts
+        "hostname": _resolve_hostname(),
+        "cpu_percent": round(cpu_percent, 2),
+        "mem_percent": round(mem.percent, 2),
+        "disk_percent": round(disk.percent, 2),
+        "last_update": datetime.now(timezone.utc),
+        "status": status,
+        "alerts": alerts,
     }
 
 def get_processes(filter_name: str = None, sort_by: str = "pid", reverse: bool = False):

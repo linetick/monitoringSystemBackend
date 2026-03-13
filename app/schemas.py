@@ -60,7 +60,7 @@ class ServerMetrics(BaseModel):
     cpu_percent: float
     mem_percent: float
     disk_percent: float
-    last_update: float
+    last_update: datetime
     status: str
     alerts: List[str]
 
