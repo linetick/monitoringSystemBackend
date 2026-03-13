@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, root_validator, validator
 
 from .roles import UserRole
 
@@ -22,6 +22,15 @@ class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     role: UserRole = UserRole.LIMITED
 
+    @validator("username")
+    def normalize_username(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("username must not be empty")
+        if any(character.isspace() for character in normalized):
+            raise ValueError("username must not contain whitespace")
+        return normalized
+
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
     is_active: bool = True
@@ -31,6 +40,17 @@ class UserUpdate(BaseModel):
     password: Optional[str] = Field(None, min_length=6)
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+
+    @validator("username")
+    def normalize_optional_username(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("username must not be empty")
+        if any(character.isspace() for character in normalized):
+            raise ValueError("username must not contain whitespace")
+        return normalized
 
 class UserResponse(UserBase):
     id: int

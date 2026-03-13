@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from . import auth, database, models, system
+from .roles import UserRole
 from .schemas import (
     AuditLogResponse,
     ProcessAction,
@@ -15,6 +16,7 @@ from .schemas import (
     Token,
     UserCreate,
     UserResponse,
+    UserUpdate,
 )
 from .dependencies import get_current_user, get_current_admin_user
 
@@ -31,6 +33,25 @@ def log_action(db: Session, user: models.User, action: str, obj: str, ip: str, d
         details=details
     ))
     db.commit()
+
+
+def get_user_or_404(db: Session, user_id: int) -> models.User:
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def ensure_username_available(db: Session, username: str, exclude_user_id: int = None) -> None:
+    query = db.query(models.User).filter(models.User.username == username)
+    if exclude_user_id is not None:
+        query = query.filter(models.User.id != exclude_user_id)
+    if query.first():
+        raise HTTPException(status_code=400, detail="Username already registered")
+
+
+def build_user_audit_details(user: models.User) -> str:
+    return f"username={user.username}; role={user.role}; is_active={user.is_active}"
 
 # --- Auth ---
 @app.post("/token", response_model=Token)
@@ -134,8 +155,7 @@ def create_user(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_admin_user)
 ):
-    if db.query(models.User).filter(models.User.username == user.username).first():
-        raise HTTPException(status_code=400, detail="Username already registered")
+    ensure_username_available(db, user.username)
     
     hashed_password = auth.get_password_hash(user.password)
     db_user = models.User(
@@ -148,7 +168,14 @@ def create_user(
     db.commit()
     db.refresh(db_user)
     
-    log_action(db, current_user, "CREATE_USER", user.username, request.client.host)
+    log_action(
+        db,
+        current_user,
+        "CREATE_USER",
+        user.username,
+        request.client.host,
+        build_user_audit_details(db_user),
+    )
     return db_user
 
 @app.get("/users", response_model=List[UserResponse])
@@ -160,6 +187,59 @@ def read_users(
     users = db.query(models.User).offset(skip).limit(limit).all()
     return users
 
+
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: int,
+    user_update: UserUpdate,
+    request: Request,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_admin_user),
+):
+    db_user = get_user_or_404(db, user_id)
+
+    changed_fields = []
+
+    if user_update.username is not None and user_update.username != db_user.username:
+        ensure_username_available(db, user_update.username, exclude_user_id=db_user.id)
+        db_user.username = user_update.username
+        changed_fields.append(f"username={db_user.username}")
+
+    if user_update.password is not None:
+        db_user.hashed_password = auth.get_password_hash(user_update.password)
+        changed_fields.append("password=updated")
+
+    if user_update.role is not None:
+        new_role = user_update.role.value
+        if db_user.id == current_user.id and new_role != UserRole.ADMIN.value:
+            raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
+        if new_role != db_user.role:
+            db_user.role = new_role
+            changed_fields.append(f"role={db_user.role}")
+
+    if user_update.is_active is not None:
+        if db_user.id == current_user.id and not user_update.is_active:
+            raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+        if user_update.is_active != db_user.is_active:
+            db_user.is_active = user_update.is_active
+            changed_fields.append(f"is_active={db_user.is_active}")
+
+    if not changed_fields:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
+    db.commit()
+    db.refresh(db_user)
+
+    log_action(
+        db,
+        current_user,
+        "UPDATE_USER",
+        db_user.username,
+        request.client.host,
+        "; ".join(changed_fields),
+    )
+    return db_user
+
 @app.delete("/users/{user_id}")
 def delete_user(
     user_id: int,
@@ -167,15 +247,22 @@ def delete_user(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_admin_user)
 ):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = get_user_or_404(db, user_id)
     if user.id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
     
+    deleted_username = user.username
+    deleted_details = build_user_audit_details(user)
     db.delete(user)
     db.commit()
-    log_action(db, current_user, "DELETE_USER", user.username, request.client.host)
+    log_action(
+        db,
+        current_user,
+        "DELETE_USER",
+        deleted_username,
+        request.client.host,
+        deleted_details,
+    )
     return {"status": "success"}
 
 # --- Audit ---
