@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
 from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+from .roles import UserRole
 
 # --- Auth ---
 class Token(BaseModel):
@@ -17,7 +20,7 @@ class UserLogin(BaseModel):
 # --- Users ---
 class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    is_admin: bool = False
+    role: UserRole = UserRole.LIMITED
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
@@ -25,7 +28,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=50)
     password: Optional[str] = Field(None, min_length=6)
-    is_admin: Optional[bool] = None
+    role: Optional[UserRole] = None
 
 class UserResponse(UserBase):
     id: int

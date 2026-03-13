@@ -15,9 +15,6 @@ from .dependencies import get_current_user, get_current_admin_user
 
 app = FastAPI(title="Server Monitoring System")
 
-# Инициализация БД
-models.Base.metadata.create_all(bind=database.engine)
-
 # --- Вспомогательная функция аудита ---
 def log_action(db: Session, user: models.User, action: str, obj: str, ip: str, details: str = None):
     db.add(models.AuditLog(
@@ -104,7 +101,11 @@ def create_user(
         raise HTTPException(status_code=400, detail="Username already registered")
     
     hashed_password = auth.get_password_hash(user.password)
-    db_user = models.User(username=user.username, hashed_password=hashed_password, is_admin=user.is_admin)
+    db_user = models.User(
+        username=user.username,
+        hashed_password=hashed_password,
+        role=user.role.value
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)

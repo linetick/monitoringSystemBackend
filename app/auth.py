@@ -5,7 +5,9 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+
 from . import models, database
+from .roles import UserRole
 
 SECRET_KEY = "CHANGE_THIS_SECRET_KEY_IN_PROD"
 ALGORITHM = "HS256"
@@ -39,6 +41,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 def require_admin(current_user: models.User = Depends(get_current_user)):
-    if not current_user.is_admin:
+    if current_user.role != UserRole.ADMIN.value:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return current_user
