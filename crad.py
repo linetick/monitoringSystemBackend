@@ -1,12 +1,13 @@
-# init_admin.py
-import os
 import time
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import text
 
-from app.database import SessionLocal, engine, Base
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+
+from app.config import settings
+from app.database import SessionLocal
 from app.models import User
 from app.auth import get_password_hash
+
 
 def init_db():
     print(">>> Waiting for database to be ready...")
@@ -33,26 +34,27 @@ def init_db():
         print(">>> Failed to connect to database after 30 attempts")
         return
 
-    try:
-        Base.metadata.create_all(bind=engine)
-        print(">>> Database tables created")
-    except Exception as e:
-        print(f">>> Error creating tables: {e}")
+    if not settings.default_admin_username or not settings.default_admin_password:
+        print(">>> DEFAULT_ADMIN_USERNAME or DEFAULT_ADMIN_PASSWORD is not set, skipping admin bootstrap")
         return
-    
+
     db = SessionLocal()
     try:
-        if not db.query(User).filter(User.username == "admin").first():
-            # bcrypt ограничивает пароль 72 байтами - обрезаем на всякий случай
-            raw_password = "123"
+        if not db.execute(text("SELECT to_regclass('public.users')")).scalar():
+            print(">>> users table does not exist, run migrations first")
+            return
+
+        if not db.query(User).filter(User.username == settings.default_admin_username).first():
+            raw_password = settings.default_admin_password
             admin = User(
-                username="admin",
+                username=settings.default_admin_username,
                 hashed_password=get_password_hash(raw_password[:72]),
-                is_admin=True
+                is_admin=True,
+                is_active=settings.default_admin_is_active,
             )
             db.add(admin)
             db.commit()
-            print(">>> Admin user created: admin / 123")
+            print(f">>> Admin user created: {settings.default_admin_username}")
         else:
             print(">>> Admin user already exists")
     except Exception as e:

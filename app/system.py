@@ -1,6 +1,9 @@
-import psutil
 import os
 import time
+
+import psutil
+from fastapi import HTTPException
+
 
 def get_server_metrics():
     # Загрузка CPU (интервал 1 сек для точности)
@@ -30,12 +33,13 @@ def get_processes(filter_name: str = None, sort_by: str = "pid", reverse: bool =
         try:
             info = proc.info
             # Фильтрация
-            if filter_name and filter_name.lower() not in info['name'].lower():
+            process_name = info["name"] or ""
+            if filter_name and filter_name.lower() not in process_name.lower():
                 continue
             
             procs.append({
                 "pid": info['pid'],
-                "name": info['name'],
+                "name": process_name,
                 "cpu": info['cpu_percent'] or 0.0,
                 "mem": info['memory_percent'] or 0.0,
                 "status": info['status'],
@@ -57,15 +61,23 @@ def manage_process(pid: int, action: str, priority: int = None):
             p.kill()
             return f"Process {pid} killed"
         elif action == "kill_tree":
-            p.kill() # В psutil нет прямого kill_tree для всех ОС, но можно пройтись по children
             for child in p.children(recursive=True):
                 child.kill()
+            p.kill()
             return f"Process tree {pid} killed"
         elif action == "priority":
+            if priority is None:
+                raise ValueError("Priority value is required")
             if not -20 <= priority <= 19:
                 raise ValueError("Priority must be between -20 and 19")
-            os.nice(priority) # Внимание: nice меняет приоритет текущего процесса в Python, для другого процесса нужен setpriority через ctypes или командная строка
-            # Для упрощения примера используем os.nice, но в реальности для чужого PID нужен syscall
-            return f"Priority logic triggered for {pid}" # Заглушка для примера
+            p.nice(priority)
+            return f"Priority for process {pid} set to {priority}"
+        raise ValueError(f"Unsupported action: {action}")
+    except psutil.NoSuchProcess as exc:
+        raise HTTPException(status_code=404, detail=f"Process {pid} not found") from exc
+    except psutil.AccessDenied as exc:
+        raise HTTPException(status_code=403, detail=f"Access denied for process {pid}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

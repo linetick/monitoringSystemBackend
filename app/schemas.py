@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
 from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
 
 # --- Auth ---
 class Token(BaseModel):
@@ -17,19 +18,24 @@ class UserLogin(BaseModel):
 # --- Users ---
 class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    is_admin: bool = False
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
+    is_admin: bool = False
+    is_active: bool = True
 
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=50)
     password: Optional[str] = Field(None, min_length=6)
     is_admin: Optional[bool] = None
+    is_active: Optional[bool] = None
 
 class UserResponse(UserBase):
     id: int
-    is_active: bool = True
+    is_admin: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         orm_mode = True

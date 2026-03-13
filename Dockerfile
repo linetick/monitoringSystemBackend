@@ -9,7 +9,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ./app ./app
+COPY ./alembic ./alembic
+COPY ./alembic.ini ./alembic.ini
 COPY ./crad.py ./crad.py
+COPY ./db ./db
 COPY ./entrypoint.sh ./entrypoint.sh
 
 # Делаем скрипт исполняемым
