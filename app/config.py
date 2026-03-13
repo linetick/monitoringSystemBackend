@@ -38,6 +38,21 @@ class Settings:
             os.getenv("DEFAULT_ADMIN_IS_ACTIVE") or os.getenv("INITIAL_ADMIN_IS_ACTIVE"),
             True,
         )
+        self.metrics_cpu_interval_seconds = float(
+            os.getenv("METRICS_CPU_INTERVAL_SECONDS", "1.0")
+        )
+        self.server_name = os.getenv("SERVER_NAME")
+        self.metrics_disk_path = os.getenv("METRICS_DISK_PATH", "/host/proc/1/root")
+        self.metrics_hostname_path = os.getenv(
+            "METRICS_HOSTNAME_PATH",
+            "/host/proc/sys/kernel/hostname",
+        )
+        self.cpu_warning_threshold = float(os.getenv("CPU_WARNING_THRESHOLD", "70"))
+        self.cpu_critical_threshold = float(os.getenv("CPU_CRITICAL_THRESHOLD", "90"))
+        self.mem_warning_threshold = float(os.getenv("MEM_WARNING_THRESHOLD", "75"))
+        self.mem_critical_threshold = float(os.getenv("MEM_CRITICAL_THRESHOLD", "90"))
+        self.disk_warning_threshold = float(os.getenv("DISK_WARNING_THRESHOLD", "80"))
+        self.disk_critical_threshold = float(os.getenv("DISK_CRITICAL_THRESHOLD", "90"))
 
 
 settings = Settings()
