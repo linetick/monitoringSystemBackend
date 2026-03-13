@@ -39,7 +39,7 @@ def upgrade() -> None:
             """
             UPDATE users
             SET role = CASE WHEN is_admin THEN 'admin' ELSE 'limited' END
-            WHERE role IS NULL;
+            WHERE role IS NULL OR role = 'limited';
             """
         )
         op.drop_column("users", "is_admin")

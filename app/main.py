@@ -9,6 +9,7 @@ from . import auth, database, models, system
 from .schemas import (
     AuditLogResponse,
     ProcessAction,
+    ProcessActionResult,
     ProcessInfo,
     ServerMetrics,
     Token,
@@ -73,7 +74,7 @@ def list_processes(
 ):
     return system.get_processes(filter_name, sort_by)
 
-@app.post("/processes/{pid}", response_model=dict)
+@app.post("/processes/{pid}", response_model=ProcessActionResult)
 def control_process(
     pid: int,
     action_data: ProcessAction,
@@ -85,20 +86,44 @@ def control_process(
         raise HTTPException(status_code=400, detail="Confirmation required")
     
     client_ip = request.client.host
-    details = f"Action: {action_data.action}"
-    if action_data.priority is not None:
-        details += f", Priority: {action_data.priority}"
-    
     try:
-        # Вызов логики управления (требует прав root в контейнере)
-        system.manage_process(pid, action_data.action, action_data.priority)
-        log_action(db, current_user, "PROCESS_CONTROL", str(pid), client_ip, details)
-        return {"status": "success", "message": f"Command {action_data.action} sent to {pid}"}
+        result = system.manage_process(pid, action_data.action, action_data.priority)
+        details = [
+            f"action={result['action']}",
+            f"process_name={result['process_name']}",
+            f"affected_pids={','.join(map(str, result['affected_pids']))}",
+        ]
+        if result.get("previous_priority") is not None:
+            details.append(f"previous_priority={result['previous_priority']}")
+        if result.get("current_priority") is not None:
+            details.append(f"current_priority={result['current_priority']}")
+        log_action(db, current_user, "PROCESS_CONTROL", str(pid), client_ip, "; ".join(details))
+        return result
     except HTTPException as exc:
-        log_action(db, current_user, "PROCESS_CONTROL_FAILED", str(pid), client_ip, exc.detail)
+        error_details = [f"action={action_data.action}", f"error={exc.detail}"]
+        if action_data.priority is not None:
+            error_details.append(f"priority={action_data.priority}")
+        log_action(
+            db,
+            current_user,
+            "PROCESS_CONTROL_FAILED",
+            str(pid),
+            client_ip,
+            "; ".join(error_details),
+        )
         raise
     except Exception as e:
-        log_action(db, current_user, "PROCESS_CONTROL_FAILED", str(pid), client_ip, str(e))
+        error_details = [f"action={action_data.action}", f"error={str(e)}"]
+        if action_data.priority is not None:
+            error_details.append(f"priority={action_data.priority}")
+        log_action(
+            db,
+            current_user,
+            "PROCESS_CONTROL_FAILED",
+            str(pid),
+            client_ip,
+            "; ".join(error_details),
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- User Management ---

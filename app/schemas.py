@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 from .roles import UserRole
 
@@ -54,6 +54,28 @@ class ProcessAction(BaseModel):
     action: str = Field(..., pattern="^(kill|kill_tree|priority)$")
     priority: Optional[int] = Field(None, ge=-20, le=19)
     confirm: bool = Field(..., description="Must be true to confirm action")
+
+    @root_validator
+    def validate_priority_for_action(cls, values):
+        action = values.get("action")
+        priority = values.get("priority")
+
+        if action == "priority" and priority is None:
+            raise ValueError("priority is required when action='priority'")
+        if action in {"kill", "kill_tree"} and priority is not None:
+            raise ValueError("priority is only allowed when action='priority'")
+        return values
+
+
+class ProcessActionResult(BaseModel):
+    status: str
+    message: str
+    pid: int
+    action: str
+    process_name: str
+    affected_pids: List[int]
+    previous_priority: Optional[int] = None
+    current_priority: Optional[int] = None
 
 # --- Metrics ---
 class ServerMetrics(BaseModel):

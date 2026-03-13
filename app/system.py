@@ -10,6 +10,7 @@ from .config import settings
 STATUS_OK = "ok"
 STATUS_WARNING = "warning"
 STATUS_CRITICAL = "critical"
+PROCESS_ACTION_TIMEOUT_SECONDS = 3
 
 
 def _resolve_hostname() -> str:
@@ -119,6 +120,7 @@ def get_server_metrics():
         "alerts": alerts,
     }
 
+
 def get_processes(filter_name: str = None, sort_by: str = "pid", reverse: bool = False):
     procs = []
     for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status', 'username']):
@@ -146,24 +148,85 @@ def get_processes(filter_name: str = None, sort_by: str = "pid", reverse: bool =
     
     return procs
 
+
+def _safe_process_name(process: psutil.Process) -> str:
+    try:
+        return process.name()
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return str(process.pid)
+    except psutil.AccessDenied:
+        return f"pid-{process.pid}"
+
+
+def _ensure_process_stopped(processes):
+    gone, alive = psutil.wait_procs(
+        processes,
+        timeout=PROCESS_ACTION_TIMEOUT_SECONDS,
+    )
+    if alive:
+        alive_pids = ", ".join(str(process.pid) for process in alive)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Processes did not stop in time: {alive_pids}",
+        )
+    return gone
+
+
 def manage_process(pid: int, action: str, priority: int = None):
     try:
-        p = psutil.Process(pid)
+        target_process = psutil.Process(pid)
+        process_name = _safe_process_name(target_process)
+
         if action == "kill":
-            p.kill()
-            return f"Process {pid} killed"
-        elif action == "kill_tree":
-            for child in p.children(recursive=True):
+            target_process.kill()
+            _ensure_process_stopped([target_process])
+            return {
+                "status": "success",
+                "message": f"Process {pid} killed",
+                "pid": pid,
+                "action": action,
+                "process_name": process_name,
+                "affected_pids": [pid],
+            }
+
+        if action == "kill_tree":
+            child_processes = target_process.children(recursive=True)
+            processes_to_kill = child_processes + [target_process]
+
+            for child in reversed(child_processes):
                 child.kill()
-            p.kill()
-            return f"Process tree {pid} killed"
-        elif action == "priority":
+            target_process.kill()
+            _ensure_process_stopped(processes_to_kill)
+            affected_pids = [process.pid for process in processes_to_kill]
+            return {
+                "status": "success",
+                "message": f"Process tree {pid} killed",
+                "pid": pid,
+                "action": action,
+                "process_name": process_name,
+                "affected_pids": affected_pids,
+            }
+
+        if action == "priority":
             if priority is None:
                 raise ValueError("Priority value is required")
             if not -20 <= priority <= 19:
                 raise ValueError("Priority must be between -20 and 19")
-            p.nice(priority)
-            return f"Priority for process {pid} set to {priority}"
+
+            previous_priority = int(target_process.nice())
+            target_process.nice(priority)
+            current_priority = int(target_process.nice())
+            return {
+                "status": "success",
+                "message": f"Priority for process {pid} set to {current_priority}",
+                "pid": pid,
+                "action": action,
+                "process_name": process_name,
+                "affected_pids": [pid],
+                "previous_priority": previous_priority,
+                "current_priority": current_priority,
+            }
+
         raise ValueError(f"Unsupported action: {action}")
     except psutil.NoSuchProcess as exc:
         raise HTTPException(status_code=404, detail=f"Process {pid} not found") from exc
