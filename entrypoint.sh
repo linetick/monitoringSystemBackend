@@ -2,7 +2,10 @@
 
 echo ">>> Starting initialization..."
 
-# Запускаем инициализацию БД
+echo ">>> Running database migrations..."
+alembic upgrade head
+
+# Создаем начального администратора при наличии env-переменных
 python crad.py
 
 echo ">>> Starting application..."
