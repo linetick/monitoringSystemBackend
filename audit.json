@@ -1,0 +1,74 @@
+[
+  {
+    "id": 8,
+    "timestamp": "2026-03-13T14:20:57.627908",
+    "username": "admin",
+    "action": "AUDIT_EXPORT",
+    "object_name": "/audit/export",
+    "ip_address": "172.28.0.1",
+    "details": "limit=100; format=csv"
+  },
+  {
+    "id": 7,
+    "timestamp": "2026-03-13T14:19:49.581476",
+    "username": "admin",
+    "action": "AUDIT_VIEW",
+    "object_name": "/audit",
+    "ip_address": "172.28.0.1",
+    "details": "action=LOGIN_SUCCESS; limit=50"
+  },
+  {
+    "id": 6,
+    "timestamp": "2026-03-13T14:19:02.305626",
+    "username": "admin",
+    "action": "PROCESS_CONTROL_FAILED",
+    "object_name": "1234",
+    "ip_address": "172.28.0.1",
+    "details": "action=kill; error=Process 1234 not found"
+  },
+  {
+    "id": 5,
+    "timestamp": "2026-03-13T14:18:43.114451",
+    "username": "admin",
+    "action": "DELETE_USER",
+    "object_name": "limited2",
+    "ip_address": "172.28.0.1",
+    "details": "username=limited2; role=limited; is_active=True"
+  },
+  {
+    "id": 4,
+    "timestamp": "2026-03-13T14:18:07.134470",
+    "username": "admin",
+    "action": "UPDATE_USER",
+    "object_name": "limited2",
+    "ip_address": "172.28.0.1",
+    "details": "username=limited2; password=updated"
+  },
+  {
+    "id": 3,
+    "timestamp": "2026-03-13T14:17:21.562467",
+    "username": "admin",
+    "action": "CREATE_USER",
+    "object_name": "limited1",
+    "ip_address": "172.28.0.1",
+    "details": "username=limited1; role=limited; is_active=True"
+  },
+  {
+    "id": 2,
+    "timestamp": "2026-03-13T14:12:43.063350",
+    "username": "admin",
+    "action": "LOGIN_SUCCESS",
+    "object_name": "/token",
+    "ip_address": "172.28.0.1",
+    "details": "token_type=bearer"
+  },
+  {
+    "id": 1,
+    "timestamp": "2026-03-13T14:12:06.021807",
+    "username": "admin",
+    "action": "LOGIN_FAILED",
+    "object_name": "/token",
+    "ip_address": "172.28.0.1",
+    "details": "reason=invalid_credentials"
+  }
+]
