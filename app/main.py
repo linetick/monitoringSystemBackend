@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import auth, database, models, system
@@ -60,6 +61,42 @@ def ensure_username_available(db: Session, username: str, exclude_user_id: int =
 
 def build_user_audit_details(user: models.User) -> str:
     return f"username={user.username}; role={user.role}; is_active={user.is_active}"
+
+
+def get_last_login_map(db: Session, user_ids: List[int]) -> dict[int, datetime]:
+    if not user_ids:
+        return {}
+
+    rows = (
+        db.query(
+            models.AuditLog.user_id,
+            func.max(models.AuditLog.timestamp).label("last_login"),
+        )
+        .filter(
+            models.AuditLog.user_id.in_(user_ids),
+            models.AuditLog.action == "LOGIN_SUCCESS",
+        )
+        .group_by(models.AuditLog.user_id)
+        .all()
+    )
+
+    return {
+        row.user_id: row.last_login
+        for row in rows
+        if row.user_id is not None and row.last_login is not None
+    }
+
+
+def serialize_user_response(user: models.User, last_login: Optional[datetime] = None) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at,
+        "updated_at": user.updated_at,
+        "last_login": last_login,
+    }
 
 
 def build_audit_query(
@@ -169,8 +206,12 @@ def login(
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/users/me", response_model=UserResponse)
-def read_users_me(current_user: models.User = Depends(get_current_user)):
-    return current_user
+def read_users_me(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(database.get_db),
+):
+    last_login_map = get_last_login_map(db, [current_user.id])
+    return serialize_user_response(current_user, last_login_map.get(current_user.id))
 
 
 @app.post("/logout")
@@ -191,7 +232,7 @@ def logout(
 
 # --- Metrics ---
 @app.get("/metrics", response_model=ServerMetrics)
-def get_metrics(current_user: models.User = Depends(get_current_user)):
+def get_metrics():
     return system.get_server_metrics()
 
 # --- Processes ---
@@ -304,7 +345,7 @@ def create_user(
         request.client.host,
         build_user_audit_details(db_user),
     )
-    return db_user
+    return serialize_user_response(db_user)
 
 @app.get("/users", response_model=List[UserResponse])
 def read_users(
@@ -313,7 +354,8 @@ def read_users(
     db: Session = Depends(database.get_db)
 ):
     users = db.query(models.User).offset(skip).limit(limit).all()
-    return users
+    last_login_map = get_last_login_map(db, [user.id for user in users])
+    return [serialize_user_response(user, last_login_map.get(user.id)) for user in users]
 
 
 @app.put("/users/{user_id}", response_model=UserResponse)
@@ -366,7 +408,8 @@ def update_user(
         request.client.host,
         "; ".join(changed_fields),
     )
-    return db_user
+    last_login_map = get_last_login_map(db, [db_user.id])
+    return serialize_user_response(db_user, last_login_map.get(db_user.id))
 
 @app.delete("/users/{user_id}")
 def delete_user(

@@ -58,6 +58,7 @@ class UserResponse(UserBase):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    last_login: Optional[datetime] = None
 
     class Config:
         orm_mode = True
